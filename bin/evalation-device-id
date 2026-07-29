@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# evalation-device-id - print a stable, opaque, non-PII device fingerprint (client bridge, #2268).
+#
+# The fingerprint is a ONE-WAY hash: sha256(namespace + stable-machine-id). Only the HASH is ever
+# emitted - no raw serial, hostname, username, or email leaves this helper. It is identical across
+# repeated calls on the same machine (the machine id is stable; where none is available a random id
+# is generated ONCE and persisted 0600 under the client state dir, so it stays stable thereafter).
+# The token is bound to this fingerprint at login; the hooks send it (ev_device) on every validate.
+#
+#   raw-machine-id: macOS ioreg IOPlatformUUID; Linux /etc/machine-id (or dbus machine-id);
+#                   else a persisted random id at ${EVALATION_DEVICE_ID_STATE:-<state>/device-fallback-id}.
+set -euo pipefail
+
+NS="evalation-device-fp-v1:"
+STATE="${EVALATION_DEVICE_ID_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/evalation/device-fallback-id}"
+
+sha256_hex() {
+  if   command -v shasum    >/dev/null 2>&1; then shasum -a 256 | awk '{print $1; exit}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum    | awk '{print $1; exit}'
+  elif command -v openssl   >/dev/null 2>&1; then openssl dgst -sha256 | awk '{print $NF; exit}'
+  else return 1; fi
+}
+
+raw=""
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  Darwin) raw="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4; exit}')" ;;
+  Linux)  raw="$( { cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null; } || true )" ;;
+esac
+raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+
+if [ -z "$raw" ]; then
+  # No stable machine id: reuse a persisted random id, generating one once (0600) if absent.
+  if [ -s "$STATE" ]; then raw="$(tr -d '[:space:]' < "$STATE" 2>/dev/null || true)"; fi
+  if [ -z "$raw" ]; then
+    if   command -v openssl >/dev/null 2>&1; then raw="$(openssl rand -hex 32)"
+    else raw="$(head -c 32 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"; fi
+    [ -n "$raw" ] || { echo "evalation-device-id: cannot derive a machine id" >&2; exit 1; }
+    dir="$(dirname "$STATE")"
+    ( umask 077; mkdir -p "$dir" && printf '%s' "$raw" > "$STATE" ) 2>/dev/null || true
+    chmod 600 "$STATE" 2>/dev/null || true
+  fi
+fi
+
+fp="$(printf '%s%s' "$NS" "$raw" | sha256_hex)" || { echo "evalation-device-id: no sha256 tool available" >&2; exit 1; }
+[ -n "$fp" ] || { echo "evalation-device-id: empty fingerprint" >&2; exit 1; }
+printf '%s\n' "$fp"

@@ -1,0 +1,17 @@
+{
+  "name": "evalation",
+  "owner": {
+    "name": "Evalation",
+    "url": "https://evalation.ai"
+  },
+  "description": "Official Evalation marketplace - the thin client for Evalation, an autonomous software engineering engine. All methodology runs server-side; this plugin is entitlement, injection, and auth glue only.",
+  "plugins": [
+    {
+      "name": "evalation-plugin",
+      "source": "./",
+      "description": "The thin client for Evalation, an autonomous software engineering engine: activates an entitled seat (login, server-injected operating instructions). Zero methodology or secrets on disk.",
+      "keywords": ["evalation", "autonomous-software-engineering", "code-review", "orchestration", "engine"],
+      "category": "workflow"
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# evalation-login - drive the server auth flow end to end and store the seat token (#2268, AC1).
+#
+# SENSITIVE (auth + licensing), strict, NO carve-out. Flow:
+#   1. idempotent side-load (#1697): symlink the three bin helpers onto a PATH dir so the hooks'
+#      ev_token/ev_device resolve in a NEW session.
+#   2. PKCE S256: generate a local code_verifier, derive base64url(sha256(verifier)) as the challenge.
+#   3. POST /v1/auth/login/start {code_challenge} -> {authorization_url, state}.
+#   4. open authorization_url in a browser; capture the returned authorization `code`
+#      (interactive prompt, or --code / EVALATION_LOGIN_CODE for non-interactive / automated use).
+#   5. POST /v1/auth/login/complete {code,state,code_verifier,device_fingerprint} -> {token}.
+#   6. pipe the device-bound token to `evalation-token --write` (OS keychain / 0600 fallback).
+# Fail-closed: any non-2xx / missing field -> non-zero, NO token stored. The verifier is never
+# persisted. The IdP authorization_url / code are DATA (argv/stdin/jq --arg), never eval'd.
+set -euo pipefail
+
+SELF="$(cd "$(dirname "$0")" && pwd)"
+API="${EVALATION_API_URL:-https://api.evalation.ai}"
+BIN_DIR="${EVALATION_BIN_DIR:-$HOME/.local/bin}"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+die()  { echo "evalation-login: $1" >&2; exit 1; }
+
+have jq      || die "jq is required"
+have curl    || die "curl is required"
+have openssl || die "openssl is required (PKCE)"
+
+# --- args: --code / --api-url ; code may also arrive via EVALATION_LOGIN_CODE ----------------
+CODE="${EVALATION_LOGIN_CODE:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --code)    CODE="${2:-}"; shift 2 ;;
+    --api-url) API="${2:-}";  shift 2 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+# --- idempotent side-load (#1697): make the helpers findable on PATH in new sessions ---------
+( umask 022; mkdir -p "$BIN_DIR" ) 2>/dev/null || die "cannot create $BIN_DIR"
+for h in evalation-login evalation-device-id evalation-token; do
+  [ -e "$SELF/$h" ] || continue
+  ln -sf "$SELF/$h" "$BIN_DIR/$h" 2>/dev/null || die "side-load of $h into $BIN_DIR failed"
+done
+
+# --- TLS choke: never send credentials over plaintext (non-loopback) unless explicitly opted in.
+case "$API" in
+  https://*) : ;;
+  http://127.0.0.1*|http://localhost*|"http://[::1]"*) : ;;
+  *) [ "${EVALATION_ALLOW_INSECURE:-0}" = "1" ] || die "refusing to send credentials to a non-HTTPS endpoint: $API" ;;
+esac
+
+# --- PKCE S256 -------------------------------------------------------------------------------
+b64url() { openssl base64 2>/dev/null | tr '+/' '-_' | tr -d '=\n'; }
+VERIFIER="$(openssl rand 32 | b64url)"
+[ -n "$VERIFIER" ] || die "could not generate a PKCE verifier"
+CHALLENGE="$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | b64url)"
+[ -n "$CHALLENGE" ] || die "could not derive the PKCE challenge"
+
+# --- POST /start -----------------------------------------------------------------------------
+START_BODY="$(jq -nc --arg cc "$CHALLENGE" '{code_challenge:$cc}')"
+START_RESP="$(curl -fsS -m 15 -X POST -H 'Content-Type: application/json' \
+              --data "$START_BODY" "$API/v1/auth/login/start" 2>/dev/null || true)"
+[ -n "$START_RESP" ] || die "login start failed (no response)"
+AUTH_URL="$(printf '%s' "$START_RESP" | jq -r 'if .ok == true then (.authorization_url // empty) else empty end' 2>/dev/null || true)"
+STATE="$(printf '%s' "$START_RESP"    | jq -r 'if .ok == true then (.state // empty)             else empty end' 2>/dev/null || true)"
+{ [ -n "$AUTH_URL" ] && [ -n "$STATE" ]; } || die "login start did not return an authorization URL + state"
+
+# --- open the browser (best effort); the URL is DATA, printed/handed to the opener, never eval'd
+if [ -z "$CODE" ]; then
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin) opener="open" ;;
+    *)      opener="xdg-open" ;;
+  esac
+  have "$opener" || opener=""
+  if [ -n "$opener" ]; then "$opener" "$AUTH_URL" >/dev/null 2>&1 || true
+  else echo "Open this URL in a browser to authorize:" >&2; printf '%s\n' "$AUTH_URL" >&2; fi
+  if [ -t 0 ]; then
+    printf 'Paste the authorization code: ' >&2
+    IFS= read -r CODE || true
+  fi
+fi
+[ -n "$CODE" ] || die "no authorization code (pass --code <code> or set EVALATION_LOGIN_CODE for non-interactive use)"
+
+# --- device fingerprint (from the sibling helper) --------------------------------------------
+DEVICE="$("$SELF/evalation-device-id" 2>/dev/null || true)"
+[ -n "$DEVICE" ] || die "could not compute a device fingerprint"
+
+# --- POST /complete --------------------------------------------------------------------------
+COMPLETE_BODY="$(jq -nc --arg code "$CODE" --arg state "$STATE" --arg cv "$VERIFIER" --arg dfp "$DEVICE" \
+  '{code:$code, state:$state, code_verifier:$cv, device_fingerprint:$dfp}')"
+COMPLETE_RESP="$(curl -fsS -m 15 -X POST -H 'Content-Type: application/json' \
+                 --data "$COMPLETE_BODY" "$API/v1/auth/login/complete" 2>/dev/null || true)"
+[ -n "$COMPLETE_RESP" ] || die "login complete failed (no response)"
+TOKEN="$(printf '%s' "$COMPLETE_RESP" | jq -r 'if .ok == true then (.token // empty) else empty end' 2>/dev/null || true)"
+[ -n "$TOKEN" ] || die "login complete did not return a seat token"
+
+# --- store the device-bound token; token on stdin only, never argv/log; verifier discarded here
+printf '%s' "$TOKEN" | "$SELF/evalation-token" --write || die "failed to store the seat token"
+
+echo "Evalation: seat activated on this device. Start a new session to load the engine." >&2

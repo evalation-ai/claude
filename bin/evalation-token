@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# evalation-token - store/read/clear the device-bound seat token (client bridge, item #2268).
+#
+# SENSITIVE (auth + licensing), strict, NO carve-out. The RAW token lives ONLY in the OS
+# keychain (macOS `security`) or, where no keychain agent is available, a 0600 fallback file
+# OUTSIDE the repo. It is NEVER written to the repo, a plaintext plugin config, or a log.
+# `--read` is the ONLY path that emits the token (stdout, for the hooks' ev_token). Fail-closed:
+# any backend error exits non-zero with no partial write; `--read` prints empty (exit 0) when
+# there is no stored token so the hooks treat the call as unauthenticated (not-entitled).
+#
+# Backends (auto-selected; EVALATION_TOKEN_STORE forces the 0600 file, the deterministic test hook):
+#   macOS  : security add/find/delete-generic-password (service evalation-seat-token, account=$USER)
+#   Linux  : secret-tool store/lookup/clear when present
+#   else   : 0600 file at ${EVALATION_TOKEN_STORE:-${XDG_DATA_HOME:-$HOME/.local/share}/evalation/seat-token}
+set -euo pipefail
+
+SERVICE="evalation-seat-token"
+ACCOUNT="${EVALATION_TOKEN_ACCOUNT:-${USER:-$(id -un 2>/dev/null || echo evalation)}}"
+STORE="${EVALATION_TOKEN_STORE:-${XDG_DATA_HOME:-$HOME/.local/share}/evalation/seat-token}"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+die()  { echo "evalation-token: $1" >&2; exit 1; }
+
+# An explicit EVALATION_TOKEN_STORE always forces the file backend (test + Linux-no-agent path).
+backend() {
+  if [ -n "${EVALATION_TOKEN_STORE:-}" ]; then echo file; return; fi
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin) have security    && { echo keychain;   return; } ;;
+    *)      have secret-tool && { echo secrettool; return; } ;;
+  esac
+  echo file
+}
+
+read_token() {
+  case "$(backend)" in
+    keychain)   security find-generic-password -a "$ACCOUNT" -s "$SERVICE" -w 2>/dev/null || true ;;
+    secrettool) secret-tool lookup service "$SERVICE" account "$ACCOUNT" 2>/dev/null || true ;;
+    file)       { [ -f "$STORE" ] && cat "$STORE" 2>/dev/null; } || true ;;
+  esac
+}
+
+write_token() {
+  local token; token="$(cat)"                 # token on stdin only, never argv
+  [ -n "$token" ] || die "refusing to store an empty token"
+  case "$(backend)" in
+    keychain)
+      security add-generic-password -U -a "$ACCOUNT" -s "$SERVICE" -w "$token" >/dev/null 2>&1 \
+        || die "keychain write failed" ;;
+    secrettool)
+      printf '%s' "$token" | secret-tool store --label="Evalation seat token" \
+        service "$SERVICE" account "$ACCOUNT" >/dev/null 2>&1 \
+        || die "secret-tool write failed" ;;
+    file)
+      local dir tmp; dir="$(dirname "$STORE")"
+      ( umask 077; mkdir -p "$dir" ) 2>/dev/null || die "cannot create token store dir"
+      tmp="$(mktemp "$dir/.seat-token.XXXXXX")" || die "cannot create temp file"
+      if ! ( umask 077; printf '%s' "$token" > "$tmp" ); then rm -f "$tmp"; die "token write failed"; fi
+      chmod 600 "$tmp" 2>/dev/null || true
+      mv "$tmp" "$STORE" || { rm -f "$tmp"; die "token store move failed"; } ;;
+  esac
+}
+
+clear_token() {
+  case "$(backend)" in
+    keychain)   security delete-generic-password -a "$ACCOUNT" -s "$SERVICE" >/dev/null 2>&1 || true ;;
+    secrettool) secret-tool clear service "$SERVICE" account "$ACCOUNT" >/dev/null 2>&1 || true ;;
+    file)       rm -f "$STORE" 2>/dev/null || true ;;
+  esac
+}
+
+case "${1:-}" in
+  --read)  read_token ;;
+  --write) write_token ;;
+  --clear) clear_token ;;
+  *) echo "usage: evalation-token --read|--write|--clear   (--write reads the token from stdin)" >&2; exit 2 ;;
+esac
