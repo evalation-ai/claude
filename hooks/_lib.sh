@@ -22,9 +22,23 @@ EVALATION_GATEWAY_URL="${EVALATION_GATEWAY_URL:-https://gateway.evalation.ai}"
 EVALATION_API_URL="${EVALATION_API_URL:-https://api.evalation.ai}"
 EVALATION_CLIENT_ID="${EVALATION_CLIENT_ID:-evalation-plugin-public}"
 
-# Client/plugin build identifiers reported on a field-error report (structured only, no PII).
-# Public, non-secret; overridable by env (a build can inject the real release/commit).
-EVALATION_CLIENT_RELEASE="${EVALATION_CLIENT_RELEASE:-0.0.0}"
+# Client/plugin build identifiers. The release is the client's SINGLE version source: it is sent as
+# X-Evalation-Plugin-Version on every gateway call, and the gateway REJECTS an out-of-range client with
+# 409 incompatible-plugin-version BEFORE dispatch. A bare 0.0.0 default is below the supported floor, so
+# the whole premium surface (operating-instructions payload, mcp) 409s and never loads. Derive the real
+# version from the co-located plugin manifest (.claude-plugin/plugin.json, shipped beside these hooks) so
+# an installed client always reports its true, in-range version. Precedence: an explicit env override
+# (a build may inject one) wins; else the manifest; else fail-soft to 0.0.0. Public, non-secret, no PII.
+_ev_manifest_version() {
+  local mf
+  mf="$(dirname -- "${BASH_SOURCE[0]}")/../.claude-plugin/plugin.json"
+  [ -f "$mf" ] || return 1
+  # Trusted, self-authored JSON; parse without a jq dependency (jq is not guaranteed at source time).
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9A-Za-z.-]*\)".*/\1/p' "$mf" | head -1
+}
+_ev_release="$(_ev_manifest_version 2>/dev/null || true)"
+EVALATION_CLIENT_RELEASE="${EVALATION_CLIENT_RELEASE:-${_ev_release:-0.0.0}}"
+unset _ev_release
 EVALATION_CLIENT_COMMIT="${EVALATION_CLIENT_COMMIT:-unknown}"
 
 # Consent / air-gap switch for client error reporting (item #79). Default ON for free/pro with
