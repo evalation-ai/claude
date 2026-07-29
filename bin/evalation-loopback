@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// evalation-loopback (#2704): the native-app OAuth loopback listener.
+//
+// Binds an ephemeral 127.0.0.1 port, prints `port=<n>` on stdout, then waits for the SINGLE
+// GET /callback the IdP redirects the browser to, prints `code=<c>&state=<s>` (url-encoded) on
+// stdout and exits 0. The caller (evalation-login) threads http://127.0.0.1:<port>/callback as
+// the OAuth redirect_uri, so the authorization code is captured locally with no manual paste and
+// never leaves the machine. SENSITIVE (auth): the query is DATA only (parsed via URL, never
+// eval'd); no dependencies (node http only, so it runs anywhere Claude Code does); fail-closed on
+// a bind error or a timeout. Loopback needs no TLS (browsers permit http on 127.0.0.1).
+'use strict';
+const http = require('http');
+
+const TIMEOUT_MS = Number(process.env.EVALATION_LOOPBACK_TIMEOUT_MS || 300000);
+const HOST = '127.0.0.1';
+
+const server = http.createServer((req, res) => {
+  let u = null;
+  try {
+    u = new URL(req.url || '/', 'http://127.0.0.1');
+  } catch {
+    u = null;
+  }
+  if (!u || u.pathname !== '/callback') {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
+    return;
+  }
+  const code = u.searchParams.get('code') || '';
+  const state = u.searchParams.get('state') || '';
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(
+    '<!doctype html><html><head><meta charset="utf-8"><title>Evalation</title></head>' +
+      '<body style="font-family:system-ui,sans-serif;padding:3rem;text-align:center;color:#222">' +
+      '<h2>Evalation</h2><p>Sign-in received. You can close this tab and return to your terminal.</p>' +
+      '</body></html>',
+  );
+  // Emit the captured values on ONE stdout line (url-encoded), then shut down cleanly.
+  process.stdout.write(`code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}\n`);
+  server.close(() => process.exit(0));
+});
+
+server.on('error', (e) => {
+  process.stderr.write(`evalation-loopback: ${e && e.message ? e.message : 'listen error'}\n`);
+  process.exit(2);
+});
+
+server.listen(0, HOST, () => {
+  const addr = server.address();
+  const port = addr && typeof addr === 'object' ? addr.port : 0;
+  if (!port) {
+    process.stderr.write('evalation-loopback: no port assigned\n');
+    process.exit(2);
+    return;
+  }
+  process.stdout.write(`port=${port}\n`);
+});
+
+setTimeout(() => {
+  process.stderr.write('evalation-loopback: timed out waiting for the sign-in callback\n');
+  process.exit(3);
+}, TIMEOUT_MS).unref();

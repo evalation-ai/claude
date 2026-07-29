@@ -20,6 +20,9 @@ BIN_DIR="${EVALATION_BIN_DIR:-$HOME/.local/bin}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 die()  { echo "evalation-login: $1" >&2; exit 1; }
+# Decode an x-www-form-urlencoded value (%HH + '+'). The input is DATA from the loopback query,
+# never eval'd: printf %b only interprets the \xHH we substitute for %HH.
+urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
 
 have jq      || die "jq is required"
 have curl    || die "curl is required"
@@ -56,17 +59,39 @@ VERIFIER="$(openssl rand 32 | b64url)"
 CHALLENGE="$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | b64url)"
 [ -n "$CHALLENGE" ] || die "could not derive the PKCE challenge"
 
-# --- POST /start -----------------------------------------------------------------------------
-START_BODY="$(jq -nc --arg cc "$CHALLENGE" '{code_challenge:$cc}')"
+# --- redirect_uri: a native-app 127.0.0.1 LOOPBACK the local listener captures (no manual paste).
+# Interactive: start the node loopback helper and use its ephemeral port. Non-interactive (--code /
+# EVALATION_LOGIN_CODE) must carry the matching redirect_uri the code was obtained with.
+LOOPBACK_OPEN=0
+if [ -n "$CODE" ]; then
+  REDIRECT_URI="${EVALATION_LOGIN_REDIRECT_URI:-}"
+  [ -n "$REDIRECT_URI" ] || die "--code / EVALATION_LOGIN_CODE requires EVALATION_LOGIN_REDIRECT_URI (the loopback url the code was obtained with)"
+else
+  have node || die "sign-in needs node (it ships with Claude Code) to run the local loopback listener"
+  [ -x "$SELF/evalation-loopback" ] || die "the sign-in loopback helper (evalation-loopback) is missing"
+  # Read the helper's stdout on fd 3 across the browser round-trip: first `port=<n>`, later `code=..&state=..`.
+  exec 3< <(node "$SELF/evalation-loopback" 2>/dev/null)
+  IFS= read -r _portline <&3 || true
+  case "${_portline:-}" in
+    port=*) LOOPBACK_PORT="${_portline#port=}" ;;
+    *) exec 3<&-; die "the sign-in loopback listener failed to start" ;;
+  esac
+  REDIRECT_URI="http://127.0.0.1:${LOOPBACK_PORT}/callback"
+  LOOPBACK_OPEN=1
+fi
+
+# --- POST /start (with the loopback redirect_uri) --------------------------------------------
+START_BODY="$(jq -nc --arg cc "$CHALLENGE" --arg ru "$REDIRECT_URI" '{code_challenge:$cc, redirect_uri:$ru}')"
 START_RESP="$(curl -fsS -m 15 -X POST -H 'Content-Type: application/json' \
               --data "$START_BODY" "$API/v1/auth/login/start" 2>/dev/null || true)"
-[ -n "$START_RESP" ] || die "login start failed (no response)"
+[ -n "$START_RESP" ] || { [ "$LOOPBACK_OPEN" = 1 ] && exec 3<&-; die "login start failed (no response)"; }
 AUTH_URL="$(printf '%s' "$START_RESP" | jq -r 'if .ok == true then (.authorization_url // empty) else empty end' 2>/dev/null || true)"
 STATE="$(printf '%s' "$START_RESP"    | jq -r 'if .ok == true then (.state // empty)             else empty end' 2>/dev/null || true)"
-{ [ -n "$AUTH_URL" ] && [ -n "$STATE" ]; } || die "login start did not return an authorization URL + state"
+{ [ -n "$AUTH_URL" ] && [ -n "$STATE" ]; } || { [ "$LOOPBACK_OPEN" = 1 ] && exec 3<&-; die "login start did not return an authorization URL + state"; }
 
-# --- open the browser (best effort); the URL is DATA, printed/handed to the opener, never eval'd
-if [ -z "$CODE" ]; then
+# --- open the browser; the loopback listener captures the code from the redirect (no paste). The
+# URL is DATA, handed to the opener, never eval'd.
+if [ "$LOOPBACK_OPEN" = 1 ]; then
   case "$(uname -s 2>/dev/null || echo unknown)" in
     Darwin) opener="open" ;;
     *)      opener="xdg-open" ;;
@@ -74,12 +99,21 @@ if [ -z "$CODE" ]; then
   have "$opener" || opener=""
   if [ -n "$opener" ]; then "$opener" "$AUTH_URL" >/dev/null 2>&1 || true
   else echo "Open this URL in a browser to authorize:" >&2; printf '%s\n' "$AUTH_URL" >&2; fi
-  if [ -t 0 ]; then
-    printf 'Paste the authorization code: ' >&2
-    IFS= read -r CODE || true
-  fi
+  echo "Evalation: waiting for the browser sign-in to complete..." >&2
+  # Block until the listener writes the callback line (or its timeout closes the pipe).
+  IFS= read -r _cbline <&3 || true
+  exec 3<&-
+  case "${_cbline:-}" in
+    code=*) : ;;
+    *) die "sign-in did not complete (no callback received before it timed out); no token stored" ;;
+  esac
+  _cb_code="$(printf '%s' "$_cbline" | sed -n 's/^code=\([^&]*\).*/\1/p')"
+  _cb_state="$(printf '%s' "$_cbline" | sed -n 's/.*[?&]state=\([^&]*\).*/\1/p')"
+  CODE="$(urldecode "$_cb_code")"
+  # CSRF: the state returned to the loopback MUST equal the state issued at /start.
+  [ "$(urldecode "$_cb_state")" = "$STATE" ] || die "sign-in state mismatch (possible CSRF); aborting, no token stored"
 fi
-[ -n "$CODE" ] || die "no authorization code (pass --code <code> or set EVALATION_LOGIN_CODE for non-interactive use)"
+[ -n "$CODE" ] || die "no authorization code captured"
 
 # --- device fingerprint (from the sibling helper) --------------------------------------------
 DEVICE="$("$SELF/evalation-device-id" 2>/dev/null || true)"

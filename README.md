@@ -64,20 +64,27 @@ written by the login flow and read at runtime.
 `/ev-login` runs the client sign-in helper (`bin/evalation-login`), which drives the server auth
 flow and stores a **device-bound** seat token. It:
 
-1. **Side-loads** three helpers onto a PATH directory (`${EVALATION_BIN_DIR:-$HOME/.local/bin}`) so
+1. **Side-loads** the helpers onto a PATH directory (`${EVALATION_BIN_DIR:-$HOME/.local/bin}`) so
    a new session's hooks can find them. Ensure that directory is on your `PATH` (most shells already
    include `~/.local/bin`); if not, add it and start a new session.
-2. Generates a PKCE (S256) verifier, calls `POST /v1/auth/login/start`, opens the returned
-   authorization URL in your browser, collects the authorization `code`, then calls
-   `POST /v1/auth/login/complete` (binding the token to this device) and stores the token.
+2. Generates a PKCE (S256) verifier and starts a short-lived listener on a `127.0.0.1` loopback port.
+   It calls `POST /v1/auth/login/start` with that loopback as the OAuth `redirect_uri`, opens the
+   returned authorization URL in your browser, and the listener **captures the authorization code
+   automatically** when the provider redirects back, so there is nothing to copy or paste. It then
+   verifies the returned `state` (CSRF) and calls `POST /v1/auth/login/complete` (binding the token
+   to this device) and stores the token.
 
-Non-interactive / headless: `evalation-login --code <code>` (or set `EVALATION_LOGIN_CODE`).
+The loopback capture uses a tiny built-in listener (`bin/evalation-loopback`, node - already present
+because Claude Code runs on node). Non-interactive / headless (no browser): supply the code and the
+matching loopback redirect it was obtained with via `evalation-login --code <code>` (or
+`EVALATION_LOGIN_CODE`) plus `EVALATION_LOGIN_REDIRECT_URI`.
 
-The three shipped helpers (in `bin/`):
+The shipped helpers (in `bin/`):
 
 | Helper | Role |
 |--------|------|
-| `evalation-login` | Drive the auth flow end to end and store the seat token. |
+| `evalation-login` | Drive the auth flow end to end (loopback capture) and store the seat token. |
+| `evalation-loopback` | The `127.0.0.1` listener that captures the OAuth redirect's code, then exits. |
 | `evalation-token` | `--read` prints the stored token (empty when none), `--write` stores it (token on stdin), `--clear` removes it. |
 | `evalation-device-id` | Print a stable, opaque, non-PII device fingerprint (a one-way hash; no raw serial / hostname / username). |
 
