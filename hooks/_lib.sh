@@ -38,6 +38,14 @@ EVALATION_ERROR_REPORTING="${EVALATION_ERROR_REPORTING:-on}"
 EV_CACHE_DIR="${EVALATION_CACHE_DIR:-${TMPDIR:-/tmp}/evalation-plugin}"
 EV_CACHE_FILE="$EV_CACHE_DIR/entitlement.json"
 
+# The plugin's helper bins (evalation-token, evalation-device-id, evalation-login) are installed to
+# ${EVALATION_BIN_DIR:-$HOME/.local/bin} by the login flow. Claude Code's hook environment does NOT
+# guarantee that dir is on PATH - the desktop app AND a plain `claude` CLI launch both omit it - so the
+# seat check must locate the helpers ITSELF, never depending on the customer's launch PATH. Put the bin
+# dir on PATH here (P0: else ev_token is empty -> the server sees an unauthenticated call -> not-entitled
+# -> the activation loop where a fresh session keeps reporting the seat inactive).
+export PATH="${EVALATION_BIN_DIR:-$HOME/.local/bin}:$PATH"
+
 ev_have() { command -v "$1" >/dev/null 2>&1; }
 
 # Transport security choke-point (#1838, #1963): the seat credentials (Bearer token + license) may ONLY
