@@ -296,3 +296,45 @@ ev_payload() {
   [ -n "$body" ] || return 1
   printf '%s' "$body"
 }
+
+# --- One-time per-session operating-instructions catch-up marker (item #2740) --------------------
+# The per-turn hook makes a session that activated MID-session (e.g. after /ev-login, which stores
+# the seat token AFTER SessionStart already ran token-less) become active with no restart, by
+# injecting the operating instructions exactly once. These three helpers are the deterministic
+# per-session state (P0004): a stable key, a marker read, and an atomic one-shot claim. No
+# methodology, no secrets, no PII - the marker is a zero-byte directory named by a sanitized key.
+
+# Derive a stable per-session key. Prefers the hook's stdin session_id (passed as $1 = the raw stdin
+# JSON), else $EVALATION_SESSION, else the parent pid. The value is DATA (P0015): sanitized to a
+# tight path-safe alphabet, length-bounded, leading dots stripped (no traversal / hidden-file / . /
+# ..), never eval'd, never interpolated into a command - only ever used as a single path component.
+ev_session_key() {
+  local raw="" json="${1:-}"
+  if [ -n "$json" ] && ev_have jq; then
+    raw="$(jq -r '.session_id // empty' <<<"$json" 2>/dev/null || true)"
+  fi
+  [ -n "$raw" ] || raw="${EVALATION_SESSION:-}"
+  [ -n "$raw" ] || raw="$PPID"
+  raw="$(printf '%s' "$raw" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
+  raw="$(printf '%s' "$raw" | sed 's/^\.*//')"   # strip leading dots (no ./.. / hidden file)
+  [ -n "$raw" ] || raw="session"                 # never empty -> a stable fallback token
+  printf '%s' "$raw"
+}
+
+# True when the operating-instructions catch-up has already been recorded for this session (P0004).
+ev_oi_marked() {
+  local key="${1:-}"
+  [ -n "$key" ] || return 1
+  [ -d "$EV_CACHE_DIR/sessions/$key.oi" ]
+}
+
+# Atomic one-shot claim of the per-session marker: mkdir is atomic, so it succeeds EXACTLY once and
+# returns non-zero if already claimed (a re-entry can never double-inject). Best-effort prune of
+# markers older than a day so they never accumulate; prune errors are swallowed.
+ev_oi_claim() {
+  local key="${1:-}"
+  [ -n "$key" ] || return 1
+  mkdir -p "$EV_CACHE_DIR/sessions" 2>/dev/null || return 1
+  find "$EV_CACHE_DIR/sessions" -maxdepth 1 -name '*.oi' -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+  mkdir "$EV_CACHE_DIR/sessions/$key.oi" 2>/dev/null
+}

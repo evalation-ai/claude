@@ -16,6 +16,9 @@ if ! ev_have jq || ! ev_have curl; then
   exit 0
 fi
 
+# Read stdin once (the hook's JSON carries session_id) for the per-session catch-up marker (#2740).
+STDIN_JSON="$(cat 2>/dev/null || true)"
+
 RESP="$(ev_validate_cached)"
 
 if ev_is_active "$RESP"; then
@@ -28,6 +31,9 @@ if ev_is_active "$RESP"; then
   PAYLOAD="$(ev_payload operating-instructions 8 || true)"
   if [ -n "$PAYLOAD" ]; then
     emit "$PAYLOAD"
+    # Record the per-session catch-up marker so the per-turn hook never re-injects this session
+    # (#2740, AC3). Best-effort: a claim failure never breaks the boot injection above.
+    ev_oi_claim "$(ev_session_key "$STDIN_JSON")" >/dev/null 2>&1 || true
   else
     # Entitled but payload fetch failed: do not fabricate engine content.
     emit "Evalation is active but its operating instructions are temporarily unavailable. Retry shortly."

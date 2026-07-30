@@ -30,5 +30,8 @@ Do this:
 2. If `bin/evalation-login` is not found, tell the user to ensure the Evalation Engine plugin is
    installed (the helpers live in the plugin's `bin/`), then retry.
 
-3. After login, suggest the user start a NEW session so `SessionStart` validates the seat and injects
-   the engine's operating instructions. Do not attempt to self-grant entitlement; the server is the sole authority.
+3. After login, the engine activates in THIS session on your next prompt: the per-turn hook does a
+   one-time catch-up that validates the now-stored seat and injects the engine's operating
+   instructions - no restart needed. Just send your next message and Evalation is active (run
+   /ev-account to confirm). Starting a fresh session also works as a fallback. Do not attempt to
+   self-grant entitlement; the server is the sole authority.
