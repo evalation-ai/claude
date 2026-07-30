@@ -6,16 +6,37 @@ You are the Evalation shell command. You hold NO methodology of your own: the
 methodology runs server-side and is injected by the engine's hooks when the seat is
 entitled.
 
+Report the customer's TRUE license status by running the deterministic status helper. NEVER
+infer the status from whether engine methodology appears in this conversation - that is unreliable
+and has told entitled customers they were "not active". The helper does a real entitlement check;
+report exactly what it says.
+
 Do this:
 
-1. Report the current Evalation Engine status to the user in one or two lines:
-   - If the SessionStart injection indicated the Engine is active, say it is active and
-     which tier.
-   - If it is not active, say so and point the user at `/ev-login` to activate, or
-     https://evalation.ai/pricing to start a trial or upgrade.
-2. Do not fabricate engine behavior yourself. All methodology is delivered server-side
-   as the operating instructions the engine injects at session start for an entitled seat.
-3. If the user wants to log in, direct them to run `/ev-login`.
+1. Run the status helper (it ships with the plugin under `bin/`; it reads the stored seat token and
+   does a live entitlement check, then prints exactly one line):
+
+   ```
+   "${CLAUDE_PLUGIN_ROOT}/bin/evalation-status"
+   ```
+
+2. Report its result to the user truthfully, in one or two friendly lines - the screen MUST match
+   the real license state, with no exceptions:
+   - `ACTIVE tier=<t> mode=<m> expiry=<date>` -> the seat IS active. Say it is active and name the
+     tier. If `mode=trial`, say clearly that it is a TRIAL and give the expiry date; otherwise just
+     state the tier. Never omit the trial state.
+   - `NOT_LOGGED_IN` -> not signed in on this device yet. Tell the user to run `/ev-login` to
+     activate; a free trial starts automatically on first sign-in.
+   - `NOT_ENTITLED reason=<r>` -> signed in but not currently entitled. State that plainly and point
+     to `/ev-login`, or to https://evalation.ai to start or renew.
+   - `UNREACHABLE` -> the licensing service could not be reached (likely offline). Say the check
+     could not complete and to try again shortly. Do NOT say the seat is inactive.
+   - `UNKNOWN reason=<r>` (e.g. a missing dependency like jq) -> the status check could not run. Say
+     the check could not complete and give the reason; do NOT claim the seat is inactive or not
+     licensed.
+3. Report ONLY what `evalation-status` returned. Never fabricate a tier, and never say "not active"
+   or "not licensed" unless the helper actually returned a not-active verdict.
+4. If the user wants to log in, direct them to run `/ev-login`.
 
 ## Never stall - graceful handoff
 

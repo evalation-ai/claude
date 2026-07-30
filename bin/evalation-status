@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# evalation-status - the deterministic, LIVE seat/license status for the customer-facing commands
+# (#2805). It reads the stored seat token and does a live entitlement validate (reusing the sibling
+# hooks/_lib.sh transport), then prints exactly ONE structured verdict on stdout, so /ev-account and
+# the other status surfaces report the TRUTH instead of guessing from whether methodology was injected
+# into the visible context. Carries NO methodology and NO secrets. Fail-closed: any uncertainty prints
+# a non-active verdict, never a fabricated "active". The license state on screen must match reality -
+# an entitled seat is ALWAYS reported active with its tier + trial state; nothing else is acceptable.
+#
+# Resolves its sibling hooks/_lib.sh by its OWN path (invoked via ${CLAUDE_PLUGIN_ROOT}, like the other
+# _lib-dependent helpers). Output (one line, stdout):
+#   ACTIVE tier=<tier> mode=<mode> expiry=<iso>   - entitled + lease granted (mode=trial marks a trial)
+#   NOT_LOGGED_IN                                 - no seat token stored (never signed in on this device)
+#   NOT_ENTITLED reason=<reason>                  - token present, the server says not entitled
+#   UNREACHABLE                                   - could not reach the licensing service (offline); NOT a deny
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../hooks/_lib.sh
+. "$DIR/../hooks/_lib.sh"
+
+# jq is required to parse the entitlement response; without it we cannot report a truthful status.
+if ! ev_have jq; then echo "UNKNOWN reason=no-jq"; exit 0; fi
+
+# No stored token -> not logged in (a DISTINCT state from logged-in-but-not-entitled). Report it plainly
+# so the copy can drive a first sign-in rather than implying a billing problem.
+TOKEN="$(ev_token)"
+if [ -z "$TOKEN" ]; then echo "NOT_LOGGED_IN"; exit 0; fi
+
+# Force a LIVE validate for an explicit status check (freshest truth for what the customer sees now).
+# ev_validate_cached still falls back to a fresh cached grant ONLY on an unreachable network, and never
+# softens a definitive deny.
+RESP="$(EVALATION_FORCE_VALIDATE=1 ev_validate_cached)"
+
+if ev_is_active "$RESP"; then
+  tier="$(jq -r '.tier // "unknown"' <<<"$RESP" 2>/dev/null || echo unknown)"
+  mode="$(jq -r '.mode // "active"' <<<"$RESP" 2>/dev/null || echo active)"
+  expiry="$(jq -r '.expiry // .trial_expiry // ""' <<<"$RESP" 2>/dev/null || echo "")"
+  printf 'ACTIVE tier=%s mode=%s expiry=%s\n' "$tier" "$mode" "$expiry"
+  exit 0
+fi
+
+reason="$(jq -r '.reason // "unknown"' <<<"$RESP" 2>/dev/null || echo unknown)"
+if [ "$reason" = "unreachable" ]; then
+  echo "UNREACHABLE"
+else
+  printf 'NOT_ENTITLED reason=%s\n' "$reason"
+fi
+exit 0

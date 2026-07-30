@@ -12,11 +12,22 @@ Do this:
 1. Tell the user this is the Evalation onboarding entry point, and that the onboarding flow
    itself is served by the Evalation Engine for an entitled seat (this command holds none of
    it).
-2. Check whether the seat is active, using the same SessionStart-injection signal the
-   `ev-account` command reads. If it is NOT active: tell the user the seat is not active and
-   direct them to run `/ev-login` to activate. Do NOT run onboarding, and stop here
-   (fail-closed). Never self-grant entitlement.
-3. If the seat is entitled: fetch the server-served onboarding flow by running
+2. Check the seat with a DETERMINISTIC live entitlement check - run the status helper, never infer
+   from injected context (that has falsely told entitled customers they were not licensed):
+
+   ```
+   "${CLAUDE_PLUGIN_ROOT}/bin/evalation-status"
+   ```
+
+   Branch on its single-line verdict:
+   - `ACTIVE ...` -> the seat is entitled; proceed to step 3.
+   - `NOT_LOGGED_IN` -> tell the user to run `/ev-login` to activate; do NOT run onboarding, stop here.
+   - `NOT_ENTITLED reason=<r>` -> tell the user the seat is not currently entitled and to run
+     `/ev-login` or visit https://evalation.ai; do NOT run onboarding, stop here.
+   - `UNREACHABLE` or `UNKNOWN reason=<r>` -> the check could not complete (offline or a missing
+     dependency). Say so and ask them to retry; do NOT claim the seat is inactive and do NOT run
+     onboarding. Never self-grant entitlement.
+3. If the seat is entitled (an `ACTIVE` verdict): fetch the server-served onboarding flow by running
    `"${CLAUDE_PLUGIN_ROOT}/bin/evalation-payload" onboarding-methodology`, then follow the
    returned server-delivered flow end-to-end. Do not author or inline any interview questions,
    seeding steps, or answer-to-governance mapping here; the methodology stays server-served.
