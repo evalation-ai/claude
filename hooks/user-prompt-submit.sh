@@ -15,21 +15,10 @@ ev_have curl || exit 0
 RESP="$(ev_validate_cached)"
 ev_is_active "$RESP" || exit 0   # fail closed: no injection when not active
 
-TOKEN="$(ev_token)"
-# Per-turn guidance is served as a payload over the gateway's POST /v1/payloads module (#1963, the
-# #1961 mounted module; identical `{ id, body }` shape re-resolved + gated server-side). It re-homes
-# the old /v1/mcp/payload route onto the non-secret gateway base; the signing key stays isolated
-# behind the separate entitlement service, never behind the gateway.
-GUIDANCE_RESP="$(ev_curl -fsS -m 6 -X POST \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "X-Evalation-Client: ${EVALATION_CLIENT_ID}" \
-            -H "X-Evalation-Session: ${EVALATION_SESSION:-$$}" \
-            -H "X-Evalation-Device: $(ev_device)" \
-            -H "$(ev_plugin_version_header)" \
-            -H "Content-Type: application/json" \
-            --data '{"id":"per-turn-guidance"}' \
-            "${EVALATION_GATEWAY_URL}/v1/payloads" 2>/dev/null || true)"
-GUIDANCE="$(jq -r '.body // empty' <<<"$GUIDANCE_RESP" 2>/dev/null || true)"
+# Per-turn guidance via the single fetch choke-point (ev_payload in _lib.sh): POST /v1/payloads
+# `{ id, body }`, re-resolved + gated server-side. `|| true` keeps the quiet-exit behaviour on the
+# fail-closed non-zero return; an empty GUIDANCE exits below with no injection.
+GUIDANCE="$(ev_payload per-turn-guidance 6 || true)"
 
 [ -n "$GUIDANCE" ] || exit 0
 jq -n --arg ctx "$GUIDANCE" '{continue:true, additionalContext:$ctx, suppressOutput:true}'

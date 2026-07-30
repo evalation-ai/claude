@@ -21,22 +21,11 @@ RESP="$(ev_validate_cached)"
 if ev_is_active "$RESP"; then
   # Entitled: ask the server for the tier-scoped operating instructions and inject
   # whatever it returns. The client does not author or cache methodology content.
-  TOKEN="$(ev_token)"
-  # Route contract (backend gateway module, backend/modules/payloads): POST /v1/payloads with a JSON
-  # body; `{ "id": "<payload>" }` returns `{ id, body }`, gated + re-resolved server-side. The full
-  # entitlement header set (session + device binding) matches ev_validate_cached, so the gateway can
-  # re-resolve the seat over HTTP to the isolated entitlement service (#1963, re-homes /v1/mcp/payload
-  # onto the non-secret gateway base; the signing key stays behind entitlement, never the gateway).
-  PAYLOAD_RESP="$(ev_curl -fsS -m 8 -X POST \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "X-Evalation-Client: ${EVALATION_CLIENT_ID}" \
-              -H "X-Evalation-Session: ${EVALATION_SESSION:-$$}" \
-              -H "X-Evalation-Device: $(ev_device)" \
-              -H "$(ev_plugin_version_header)" \
-              -H "Content-Type: application/json" \
-              --data '{"id":"operating-instructions"}' \
-              "${EVALATION_GATEWAY_URL}/v1/payloads" 2>/dev/null || true)"
-  PAYLOAD="$(jq -r '.body // empty' <<<"$PAYLOAD_RESP" 2>/dev/null || true)"
+  # Single fetch choke-point (ev_payload in _lib.sh): POST /v1/payloads `{ "id": "<payload>" }` ->
+  # `{ id, body }`, gated + re-resolved server-side over the same credentialed header set. `|| true`
+  # so `set -e` never aborts on the fail-closed non-zero return; an empty PAYLOAD falls through to
+  # the "temporarily unavailable" branch below.
+  PAYLOAD="$(ev_payload operating-instructions 8 || true)"
   if [ -n "$PAYLOAD" ]; then
     emit "$PAYLOAD"
   else

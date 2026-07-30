@@ -10,12 +10,22 @@ or secrets, only the thin transport, auth, and injection glue.
 
 ## Install
 
-Get the one-line install command for your Claude Code from **https://evalation.ai**. It adds the
-Evalation marketplace and installs the thin client (`evalation-plugin` from the `evalation`
-marketplace). Once Evalation is listed on the official Claude Code marketplace,
-`/plugin install evalation-plugin@claude-plugins-official` works with nothing to add.
+1. **Install the plugin.** Get the one-line install command for your Claude Code from
+   **https://evalation.ai**. It adds the Evalation marketplace and installs the thin client
+   (`evalation-plugin` from the `evalation` marketplace). Once Evalation is listed on the official
+   Claude Code marketplace, `/plugin install evalation-plugin@claude-plugins-official` works with
+   nothing to add.
 
-After installing, activate a seat and onboard your repository:
+2. **Restart Claude Code.** Claude Code activates a newly installed plugin only when it starts, so
+   the Evalation commands below do not exist until you restart. Desktop app: quit it completely
+   (Cmd-Q / File > Quit) and reopen. Terminal: exit the session and run `claude` again. Opening a
+   new window or clearing the session is not enough.
+
+3. **Activate a seat** with `/ev-login` (OAuth flow; binds a seat token to this device, kept in the
+   OS keychain).
+
+4. **Onboard this repository** with `/ev-init` (onboard THIS repository for autonomous software
+   engineering). Run `/ev-account` any time to show seat status and tier.
 
 ```
 /ev-login     # OAuth flow; binds a seat token to this device (kept in the OS keychain)

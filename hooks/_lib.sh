@@ -265,3 +265,34 @@ ev_validate_cached() {
   # No live grant, no fresh cache: fail closed.
   printf '%s' "$resp"
 }
+
+# ev_payload <id> [timeout_secs] - the SINGLE payload-fetch choke-point (P0043/P0025).
+# Validates the seat (ev_validate_cached / ev_is_active) then POSTs `{"id":"<id>"}` to the
+# gateway's /v1/payloads route with the same credentialed header set the other calls use, and
+# prints the server body on stdout. Fail closed: returns 1 and prints NOTHING on stdout when the
+# seat is inactive, jq/curl is missing, the fetch fails, or the body is empty - the client never
+# self-grants and never fabricates a body. The id is passed as DATA via `jq -n --arg` (P0015: never
+# a shell/eval sink), and the request goes through ev_curl so the TLS-or-loopback transport guard
+# keeps covering it. Default timeout 8s.
+ev_payload() {
+  local id="${1:-}" timeout="${2:-8}" resp token body data
+  [ -n "$id" ] || return 1
+  ev_have jq || return 1
+  ev_have curl || return 1
+  resp="$(ev_validate_cached)"
+  ev_is_active "$resp" || return 1
+  token="$(ev_token)"
+  data="$(jq -nc --arg id "$id" '{id:$id}')"
+  resp="$(ev_curl -fsS -m "$timeout" -X POST \
+            -H "Authorization: Bearer ${token}" \
+            -H "X-Evalation-Client: ${EVALATION_CLIENT_ID}" \
+            -H "X-Evalation-Session: ${EVALATION_SESSION:-$$}" \
+            -H "X-Evalation-Device: $(ev_device)" \
+            -H "$(ev_plugin_version_header)" \
+            -H "Content-Type: application/json" \
+            --data "$data" \
+            "${EVALATION_GATEWAY_URL}/v1/payloads" 2>/dev/null || true)"
+  body="$(jq -r '.body // empty' <<<"$resp" 2>/dev/null || true)"
+  [ -n "$body" ] || return 1
+  printf '%s' "$body"
+}

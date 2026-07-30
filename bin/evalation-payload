@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# evalation-payload <id> - thin client fetcher for a server-served payload.
+#
+# Resolves its sibling hooks/_lib.sh by its OWN path (so it works when invoked by the
+# ${CLAUDE_PLUGIN_ROOT} path, the only supported way - it is NOT on the login side-load list because
+# it needs _lib.sh next to it), then routes through the single ev_payload choke-point. Carries ZERO
+# methodology: it only delivers the server body for an entitled seat. Fail closed (P0005): on an
+# inactive seat, a failed fetch, or an empty body it prints a single structured reason to STDERR
+# (not-entitled / unavailable) and exits non-zero with EMPTY stdout - never a fabricated body.
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../hooks/_lib.sh
+. "$DIR/../hooks/_lib.sh"
+
+[ "$#" -eq 1 ] && [ -n "${1:-}" ] || { echo "usage: evalation-payload <id>" >&2; exit 2; }
+
+# Distinguish the two fail-closed reasons: not entitled vs entitled-but-fetch-failed. Re-validate
+# once so a not-entitled seat reports precisely; ev_payload re-checks internally and stays the sole
+# gate on the actual fetch, so this is a reason-only pre-read (the cache makes it near-free).
+if ! ev_is_active "$(ev_validate_cached)"; then
+  echo "not-entitled" >&2
+  exit 1
+fi
+
+if BODY="$(ev_payload "$1")"; then
+  printf '%s' "$BODY"
+else
+  echo "unavailable" >&2
+  exit 1
+fi

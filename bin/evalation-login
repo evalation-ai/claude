@@ -28,15 +28,36 @@ have jq      || die "jq is required"
 have curl    || die "curl is required"
 have openssl || die "openssl is required (PKCE)"
 
-# --- args: --code / --api-url ; code may also arrive via EVALATION_LOGIN_CODE ----------------
+# --- args: --code / --api-url / --provider ; code + provider may also arrive via env ----------
 CODE="${EVALATION_LOGIN_CODE:-}"
+PROVIDER="${EVALATION_LOGIN_PROVIDER:-}"   # server default when unset; --provider flag wins over env
+PROVIDER_FROM_FLAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --code)    CODE="${2:-}"; shift 2 ;;
-    --api-url) API="${2:-}";  shift 2 ;;
+    --code)     CODE="${2:-}";     shift 2 ;;
+    --api-url)  API="${2:-}";      shift 2 ;;
+    --provider) PROVIDER="${2:-}"; PROVIDER_FROM_FLAG=1; shift 2 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
+
+# --- provider allowlist choke (fail-closed, P0052/P0005): the server SILENTLY falls back to its
+# default on an unknown selector, so an unvalidated typo would log the customer into the WRONG IdP
+# and look like success. Exact-match only (no case folding); runs BEFORE the loopback listener and
+# any curl, so an invalid value costs nothing and leaks nothing. An UNSET selector (no flag, no env)
+# is the "" default => the key is omitted below and the server default applies (AC3). An EXPLICIT
+# `--provider ""` is a user error, not "unset", so it is rejected like any other bad value (AC4).
+if [ "$PROVIDER_FROM_FLAG" = 1 ]; then
+  case "$PROVIDER" in
+    google|microsoft) : ;;
+    *) die "unknown --provider: use google or microsoft" ;;
+  esac
+else
+  case "$PROVIDER" in
+    ""|google|microsoft) : ;;
+    *) die "unknown EVALATION_LOGIN_PROVIDER: use google or microsoft" ;;
+  esac
+fi
 
 # --- idempotent side-load (#1697): make the helpers findable on PATH in new sessions ---------
 ( umask 022; mkdir -p "$BIN_DIR" ) 2>/dev/null || die "cannot create $BIN_DIR"
@@ -81,7 +102,10 @@ else
 fi
 
 # --- POST /start (with the loopback redirect_uri) --------------------------------------------
-START_BODY="$(jq -nc --arg cc "$CHALLENGE" --arg ru "$REDIRECT_URI" '{code_challenge:$cc, redirect_uri:$ru}')"
+# The provider selector is appended as DATA (jq --arg, P0015), never string-interpolated, and ONLY
+# when non-empty - an omitted key (not "" / null) is what leaves the default Google flow byte-identical.
+START_BODY="$(jq -nc --arg cc "$CHALLENGE" --arg ru "$REDIRECT_URI" --arg pv "$PROVIDER" \
+  '{code_challenge:$cc, redirect_uri:$ru} + (if $pv == "" then {} else {provider:$pv} end)')"
 START_RESP="$(curl -fsS -m 15 -X POST -H 'Content-Type: application/json' \
               --data "$START_BODY" "$API/v1/auth/login/start" 2>/dev/null || true)"
 [ -n "$START_RESP" ] || { [ "$LOOPBACK_OPEN" = 1 ] && exec 3<&-; die "login start failed (no response)"; }

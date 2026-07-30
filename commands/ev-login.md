@@ -22,6 +22,11 @@ Do this:
    returned seat token via `evalation-token --write`. For a non-interactive / headless run, pass the
    code directly: `evalation-login --code <code>` (or set `EVALATION_LOGIN_CODE`).
 
+   To pick an identity provider, pass `--provider <google|microsoft>` (or set
+   `EVALATION_LOGIN_PROVIDER`); the flag wins over the env var. Omit both to use the server default
+   (Google), which leaves the existing Google flow unchanged. An out-of-allowlist value exits
+   non-zero without contacting the server.
+
 2. If `bin/evalation-login` is not found, tell the user to ensure the Evalation Engine plugin is
    installed (the helpers live in the plugin's `bin/`), then retry.
 

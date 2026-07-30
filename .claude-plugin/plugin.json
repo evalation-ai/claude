@@ -1,6 +1,6 @@
 {
   "name": "evalation-plugin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "The thin client for Evalation, an autonomous software engineering engine. Entitlement, server-injected operating instructions, and auth glue only; all methodology runs server-side.",
   "author": {
     "name": "Evalation",
