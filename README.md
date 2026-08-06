@@ -16,16 +16,17 @@ or secrets, only the thin transport, auth, and injection glue.
    Claude Code marketplace, `/plugin install evalation-plugin@claude-plugins-official` works with
    nothing to add.
 
-2. **Restart Claude Code.** Claude Code activates a newly installed plugin only when it starts, so
-   the Evalation commands below do not exist until you restart. Desktop app: quit it completely
-   (Cmd-Q / File > Quit) and reopen. Terminal: exit the session and run `claude` again. Opening a
-   new window or clearing the session is not enough.
+2. **Restart Claude Code from the repo you want Evalation on.** Claude Code activates a newly
+   installed plugin only when it starts, so the Evalation commands below do not exist until you
+   restart, and if you restart somewhere else you will have to restart again once you switch to
+   your project. Start Claude Code with your target repository as the working directory, so the
+   setup and commands land in the right repository the first time. Desktop app: quit it
+   completely (Cmd-Q / File > Quit) and reopen it on that repo. Terminal: `cd` into the repo, exit
+   the session, and run `claude` again. Opening a new window or clearing the session is not enough.
 
-3. **Activate a seat** with `/ev-login` (OAuth flow; binds a seat token to this device, kept in the
-   OS keychain).
+3. **Activate a seat** with `/ev-login`.
 
-4. **Onboard this repository** with `/ev-init` (onboard THIS repository for autonomous software
-   engineering). Run `/ev-account` any time to show seat status and tier.
+4. **Onboard this repository** with `/ev-init`. Run `/ev-account` any time to check your seat.
 
 ```
 /ev-login     # OAuth flow; binds a seat token to this device (kept in the OS keychain)
@@ -35,8 +36,8 @@ or secrets, only the thin transport, auth, and injection glue.
 
 Every new session validates the seat on start. If the seat is active, the engine injects the
 tier-scoped operating instructions that drive the autonomous workflow. If it is not active, you
-get a friendly onboarding prompt instead. Start a free trial or upgrade at
-https://evalation.ai/pricing.
+get a friendly onboarding prompt instead. To activate, run `/ev-login`. For more information, see our website at
+https://evalation.ai.
 
 ## What this plugin does
 

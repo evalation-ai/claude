@@ -51,6 +51,10 @@ EVALATION_ERROR_REPORTING="${EVALATION_ERROR_REPORTING:-on}"
 # stale or missing cache NEVER grants - it fails closed). Tmp, per-user.
 EV_CACHE_DIR="${EVALATION_CACHE_DIR:-${TMPDIR:-/tmp}/evalation-plugin}"
 EV_CACHE_FILE="$EV_CACHE_DIR/entitlement.json"
+# Per-user record of the server-declared current plugin version (item #2816). ev_curl writes the
+# X-Evalation-Plugin-Current header value here (validated to strict semver) on every call, and
+# SessionStart reads it to fail closed on a confirmed-stale client. A public semver, no secret/PII.
+EV_SERVER_VERSION_FILE="$EV_CACHE_DIR/server-plugin-version"
 
 # The plugin's helper bins (evalation-token, evalation-device-id, evalation-login) are installed to
 # ${EVALATION_BIN_DIR:-$HOME/.local/bin} by the login flow. Claude Code's hook environment does NOT
@@ -82,7 +86,88 @@ ev_curl() {
     http://127.0.0.1*|http://localhost*|"http://[::1]"*) : ;;   # loopback: local dev / staged server
     *) [ "${EVALATION_ALLOW_INSECURE:-0}" = "1" ] || return 7 ;; # non-https, non-loopback -> refuse (no send)
   esac
-  command curl "$@"
+  # AFTER the TLS/loopback refusal (never before - no credential leaks over plaintext): dump the
+  # response headers so ev_record_server_version can learn the current plugin version (#2816). This
+  # is contract-preserving by construction - curl's EXIT STATUS and STDOUT are unchanged (-D writes
+  # to a separate file). Best-effort: if mktemp fails, fall back to the plain call. Never let set -e
+  # change the caller's contract (capture rc with the || idiom; the record step can never fail it).
+  local _hdr _rc=0
+  _hdr="$(mktemp 2>/dev/null || true)"
+  if [ -z "$_hdr" ]; then
+    command curl "$@"
+    return $?
+  fi
+  command curl -D "$_hdr" "$@" || _rc=$?
+  ev_record_server_version "$_hdr" || true
+  rm -f "$_hdr" 2>/dev/null || true
+  return "$_rc"
+}
+
+# --- Server-declared current-plugin-version currency check (item #2816) ---------------------------
+# All EXTERNAL INPUT treated as DATA (P0015): the header value is regex-validated to strict semver
+# before it is ever stored or compared, never eval'd, never interpolated into a command. The check
+# can only DENY loading a stale client; it NEVER grants (entitlement stays the sole seat authority).
+
+# Record the server's X-Evalation-Plugin-Current header from a curl header-dump file. Reads it
+# case-insensitively, strips CR/whitespace, and stores it ONLY when it is a strict N.N.N semver
+# (anything else is ignored -> fail-closed to "unknown"). Atomic write (temp + mv). Best-effort:
+# always returns 0 so it can never alter ev_curl's exit contract.
+ev_record_server_version() {
+  local _file="${1:-}" _val="" _tmp
+  [ -n "$_file" ] && [ -f "$_file" ] || return 0
+  # Case-insensitive header match; last occurrence wins (redirect chains). Strip the name up to the
+  # first colon, then all CR/whitespace. grep -i is portable (macOS/Linux); awk IGNORECASE is not.
+  _val="$(grep -i '^X-Evalation-Plugin-Current:' "$_file" 2>/dev/null | tail -1             | sed 's/^[^:]*://' | tr -d '\r' | tr -d '[:space:]')"
+  printf '%s' "$_val" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || return 0
+  mkdir -p "$EV_CACHE_DIR" 2>/dev/null || return 0
+  _tmp="$(mktemp "$EV_CACHE_DIR/.svv.XXXXXX" 2>/dev/null || true)"
+  [ -n "$_tmp" ] || return 0
+  if printf '%s' "$_val" > "$_tmp" 2>/dev/null; then
+    mv -f "$_tmp" "$EV_SERVER_VERSION_FILE" 2>/dev/null || rm -f "$_tmp" 2>/dev/null || true
+  else
+    rm -f "$_tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# ev_semver_lt A B: 0 (true) IFF A and B are BOTH strict N.N.N semvers AND A < B; non-zero in every
+# other case (either unparseable, or A >= B). Numeric field-by-field compare (never lexical). The
+# if/then form avoids a set -e abort on an equal-field short-circuit.
+ev_semver_lt() {
+  local _a="${1:-}" _b="${2:-}" _a1 _a2 _a3 _b1 _b2 _b3
+  printf '%s' "$_a" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+  printf '%s' "$_b" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+  IFS=. read -r _a1 _a2 _a3 <<EOF
+$_a
+EOF
+  IFS=. read -r _b1 _b2 _b3 <<EOF
+$_b
+EOF
+  if [ "$_a1" -ne "$_b1" ]; then [ "$_a1" -lt "$_b1" ]; return $?; fi
+  if [ "$_a2" -ne "$_b2" ]; then [ "$_a2" -lt "$_b2" ]; return $?; fi
+  [ "$_a3" -lt "$_b3" ]
+}
+
+# ev_version_stale: 0 (stale -> FAIL CLOSED) ONLY when the recorded server version file exists, its
+# value parses as strict semver, the installed EVALATION_CLIENT_RELEASE parses, AND installed <
+# recorded. 1 (proceed) in EVERY other case (no file, unparseable recorded value, unparseable
+# installed, installed >= current). This is the fail-OPEN-on-unconfirmable / fail-CLOSED-on-confirmed
+# rule (#2816 AC3/AC4): an offline or unverifiable session is never bricked.
+ev_version_stale() {
+  local _recorded=""
+  [ -f "$EV_SERVER_VERSION_FILE" ] || return 1
+  _recorded="$(cat "$EV_SERVER_VERSION_FILE" 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+  ev_semver_lt "$EVALATION_CLIENT_RELEASE" "$_recorded"
+}
+
+# Customer-facing update text for a confirmed-stale client (#2816). Names the installed version, the
+# current version, and the exact update + reload steps. No internals, no methodology, no IP (P0002):
+# a plain semver pair and the public /plugin update path.
+ev_stale_version_message() {
+  local _recorded=""
+  [ -f "$EV_SERVER_VERSION_FILE" ] && _recorded="$(cat "$EV_SERVER_VERSION_FILE" 2>/dev/null | tr -d '\r' | tr -d '[:space:]')"
+  printf 'Your Evalation Engine plugin is out of date and was not loaded this session. Installed version: %s. Current version: %s. To update: run /plugin, update the Evalation Engine plugin to the latest version, then fully restart Claude Code so the new version loads. After restarting, Evalation will load normally.' \
+    "$EVALATION_CLIENT_RELEASE" "$_recorded"
 }
 
 # Spool file for client-fault reports (item #79). Separate from the usage spool so the two
@@ -266,6 +351,38 @@ ev_validate_cached() {
   printf '%s' "$resp"
 }
 
+# ev_engine_version - resolve the CLIENT engine-version pin to send with a payload fetch (#2835, the
+# client half of the #2829 per-version floor-lookup). Delegates to the side-loaded resolver
+# scripts/customer-runtime/engine-version-pin.sh (read-or-mint, per-item sticky, from the server version
+# ev_payload captured on a prior fetch). Prints the pin on stdout, or nothing (return 1) when
+# unresolvable - the caller then OMITS engine_version and the server falls back to its current version
+# (the documented #2829 fail-safe). Fail-soft: a missing runtime resolver is simply an omitted field,
+# never an error. It sends NO repo/item/path data (AC7).
+ev_engine_version() {
+  local runtime pinsh base
+  runtime="${EVALATION_RUNTIME_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/evalation/runtime}"
+  pinsh="$runtime/scripts/customer-runtime/engine-version-pin.sh"
+  [ -x "$pinsh" ] || return 1
+  base="${EVALATION_ENGINE_STATE_BASE:-$HOME/.local/state/evalation-engine}"
+  bash "$pinsh" resolve "$base" 2>/dev/null || return 1
+}
+
+# ev_record_engine_version <version> - capture the server's current ENGINE version (from a
+# /v1/payloads response body's server_version field) so ev_engine_version can MINT the per-item pin on
+# the next step (#2835 AC4). DISTINCT from ev_record_server_version above, which records the
+# X-Evalation-Plugin-Current HEADER (#2816); these are different values and must not share a name.
+# Mirrors ev_engine_version's runtime/base resolution so both read/write the SAME per-repo state root.
+# The pin script fail-safes an absent/invalid version to a no-op, so this never errors or poisons state.
+ev_record_engine_version() {
+  local version="${1:-}" runtime pinsh base
+  [ -n "$version" ] || return 0
+  runtime="${EVALATION_RUNTIME_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/evalation/runtime}"
+  pinsh="$runtime/scripts/customer-runtime/engine-version-pin.sh"
+  [ -x "$pinsh" ] || return 0
+  base="${EVALATION_ENGINE_STATE_BASE:-$HOME/.local/state/evalation-engine}"
+  bash "$pinsh" record "$base" "$version" 2>/dev/null || true
+}
+
 # ev_payload <id> [timeout_secs] - the SINGLE payload-fetch choke-point (P0043/P0025).
 # Validates the seat (ev_validate_cached / ev_is_active) then POSTs `{"id":"<id>"}` to the
 # gateway's /v1/payloads route with the same credentialed header set the other calls use, and
@@ -283,6 +400,15 @@ ev_payload() {
   ev_is_active "$resp" || return 1
   token="$(ev_token)"
   data="$(jq -nc --arg id "$id" '{id:$id}')"
+  # #2835 client version-pin: add engine_version to the POST body when a per-item pin resolves. The
+  # pin is dotted-numeric-validated here (defense in depth, P0015); an unresolvable/invalid pin OMITS
+  # the field so the server falls back to its current version. Exactly ONE outbound field is added -
+  # no repo path, slug, item id, branch, diff, or file content ever leaves the device (AC7).
+  local pin
+  pin="$(ev_engine_version 2>/dev/null || true)"
+  if [ -n "$pin" ] && printf '%s' "$pin" | grep -qE '^[0-9]+(\.[0-9]+)+$'; then
+    data="$(jq -nc --arg id "$id" --arg ev "$pin" '{id:$id, engine_version:$ev}')"
+  fi
   resp="$(ev_curl -fsS -m "$timeout" -X POST \
             -H "Authorization: Bearer ${token}" \
             -H "X-Evalation-Client: ${EVALATION_CLIENT_ID}" \
@@ -294,6 +420,11 @@ ev_payload() {
             "${EVALATION_GATEWAY_URL}/v1/payloads" 2>/dev/null || true)"
   body="$(jq -r '.body // empty' <<<"$resp" 2>/dev/null || true)"
   [ -n "$body" ] || return 1
+  # #2835 AC4: capture the server's current version so the NEXT step can mint the per-item pin. A
+  # dotted-numeric value only; anything else is ignored by the pin script (fail-safe, content-free).
+  local sv
+  sv="$(jq -r '.server_version // empty' <<<"$resp" 2>/dev/null || true)"
+  [ -n "$sv" ] && ev_record_engine_version "$sv"
   printf '%s' "$body"
 }
 

@@ -13,7 +13,16 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../hooks/_lib.sh
 . "$DIR/../hooks/_lib.sh"
 
-[ "$#" -eq 1 ] && [ -n "${1:-}" ] || { echo "usage: evalation-payload <id>" >&2; exit 2; }
+# Parse the id. The per-item engine-version pin (#2835) resolves AUTOMATICALLY inside ev_payload from
+# the client-captured server version - no caller passes it here, so there is no manual override flag.
+ID=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -*) echo "usage: evalation-payload <id>" >&2; exit 2 ;;
+    *) [ -z "$ID" ] || { echo "usage: evalation-payload <id>" >&2; exit 2; }; ID="$1"; shift ;;
+  esac
+done
+[ -n "$ID" ] || { echo "usage: evalation-payload <id>" >&2; exit 2; }
 
 # Distinguish the two fail-closed reasons: not entitled vs entitled-but-fetch-failed. Re-validate
 # once so a not-entitled seat reports precisely; ev_payload re-checks internally and stays the sole
@@ -23,7 +32,7 @@ if ! ev_is_active "$(ev_validate_cached)"; then
   exit 1
 fi
 
-if BODY="$(ev_payload "$1")"; then
+if BODY="$(ev_payload "$ID")"; then
   printf '%s' "$BODY"
 else
   echo "unavailable" >&2

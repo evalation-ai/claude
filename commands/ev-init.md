@@ -33,3 +33,10 @@ Do this:
    seeding steps, or answer-to-governance mapping here; the methodology stays server-served.
 4. If that fetch fails or returns nothing, say so and stop. Do NOT fabricate onboarding
    content, and do NOT proceed without the server-served flow.
+
+## Next
+
+Once the seat is entitled, hand off to the server-served onboarding flow
+(`onboarding-methodology`): fetch it via `"${CLAUDE_PLUGIN_ROOT}/bin/evalation-payload"
+onboarding-methodology` and follow that returned flow end-to-end. It carries the interview, the
+seeding, and the governance mapping; this command holds none of it.

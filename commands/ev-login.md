@@ -8,8 +8,11 @@ available). The client never holds long-lived secrets in plaintext or in the rep
 
 Do this:
 
-1. Run the `evalation-login` helper. It ships with the plugin under `bin/` and, on first run, side-loads
-   the three helpers (`evalation-login`, `evalation-token`, `evalation-device-id`) into a PATH dir
+1. Ask which identity provider they use, Google or Microsoft, before you start the flow, so a
+   Microsoft customer is not forced through Google. If they have no preference, use Google. Then run
+   the `evalation-login` helper with their choice as `--provider google` or `--provider microsoft`. It
+   ships with the plugin under `bin/` and, on first run, side-loads the three helpers
+   (`evalation-login`, `evalation-token`, `evalation-device-id`) into a PATH dir
    (`${EVALATION_BIN_DIR:-$HOME/.local/bin}`) so a new session's hooks can find them:
 
    ```
@@ -35,3 +38,19 @@ Do this:
    instructions - no restart needed. Just send your next message and Evalation is active (run
    /ev-account to confirm). Starting a fresh session also works as a fallback. Do not attempt to
    self-grant entitlement; the server is the sole authority.
+
+Branch on the helper's outcome (do not guess - take the exact action for the outcome you got):
+
+- Login succeeded (helper exits 0, a seat token is stored) -> proceed to `## Next`.
+- Helper not found (`bin/evalation-login` is missing) -> tell the user to ensure the Evalation
+  Engine plugin is installed (the helpers live in the plugin's `bin/`), then retry this command.
+- Helper exits non-zero (auth flow failed, e.g. the browser step was cancelled or the server was
+  unreachable) -> report that login did not complete, do NOT store or self-grant anything, and ask
+  the user to run `/ev-login` again. Never treat a failed login as active.
+- Out-of-allowlist provider (an `EVALATION_LOGIN_PROVIDER` / `--provider` value outside
+  `google|microsoft`; the helper exits non-zero WITHOUT contacting the server) -> tell the user to
+  re-run with a supported provider (`--provider google` or `--provider microsoft`), then retry.
+
+## Next
+
+Run `/ev-init` to onboard this repository for autonomous software engineering.
